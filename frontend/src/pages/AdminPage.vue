@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api/client";
 import { useCatalogStore } from "@/stores/catalog";
+import type { CreditProfile } from "@/api/types";
+import { EVENT_LABEL, tierLabel, tierTagType } from "@/config/credit";
 
 const catalog = useCatalogStore();
 const tab = ref("dashboard");
@@ -92,6 +94,64 @@ async function changeRole(row: Record<string, any>, role: string) {
   } catch (error) {
     ElMessage.error((error as Error).message);
   }
+}
+
+// ------------------------------------------------------------------ 信用
+const creditDrawer = ref(false);
+const creditTarget = ref<{ uuid: string; nickname: string } | null>(null);
+const creditProfile = ref<CreditProfile | null>(null);
+const creditLoading = ref(false);
+const creditDrawerTitle = computed(() => `信用档案 · ${creditTarget.value?.nickname ?? ""}`);
+
+async function openCredit(row: Record<string, any>) {
+  creditTarget.value = { uuid: row.uuid, nickname: row.nickname };
+  creditDrawer.value = true;
+  creditProfile.value = null;
+  creditLoading.value = true;
+  try {
+    creditProfile.value = await api.get<CreditProfile>(`/admin/users/${row.uuid}/credit`);
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    creditLoading.value = false;
+  }
+}
+
+async function adjustCredit() {
+  if (!creditTarget.value || !creditProfile.value) return;
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "调整分值（-100 ~ 100，负数扣分）与理由，用空格分隔。例如：-10 多次发布广告",
+      "人工调整信用分",
+      {
+        inputValidator: (text) => {
+          const amount = Number((text ?? "").trim().split(/\s+/)[0]);
+          const reason = (text ?? "").trim().split(/\s+/).slice(1).join(" ");
+          if (!Number.isInteger(amount) || amount < -100 || amount > 100 || amount === 0) {
+            return "分值需为 -100 ~ 100 的非零整数";
+          }
+          return reason.length >= 2 ? true : "请填写至少 2 个字的理由";
+        },
+      },
+    );
+    const [amountRaw, ...rest] = value.trim().split(/\s+/);
+    await api.post(`/admin/users/${creditTarget.value.uuid}/credit`, {
+      amount: Number(amountRaw),
+      reason: rest.join(" "),
+    });
+    ElMessage.success("已调整并通知用户");
+    await openCredit({ uuid: creditTarget.value.uuid, nickname: creditTarget.value.nickname });
+    await loadUsers();
+  } catch (error) {
+    if (error instanceof Error && error.message) ElMessage.error(error.message);
+  }
+}
+
+async function recomputeCredit() {
+  if (!creditTarget.value) return;
+  await api.post(`/admin/users/${creditTarget.value.uuid}/credit/recompute`);
+  ElMessage.success("已按流水重算");
+  await openCredit({ uuid: creditTarget.value.uuid, nickname: creditTarget.value.nickname });
 }
 
 async function decideAppeal(row: Record<string, any>, decision: "approve" | "uphold") {
@@ -240,11 +300,18 @@ onMounted(async () => {
           <el-table-column prop="email" label="邮箱" width="200" />
           <el-table-column prop="role" label="角色" width="110" />
           <el-table-column prop="status" label="状态" width="100" />
-          <el-table-column prop="creditScore" label="信用分" width="90" />
+          <el-table-column label="信用" width="150">
+            <template #default="{ row }">
+              <el-tag :type="tierTagType(row.creditTier)" size="small">
+                {{ tierLabel(row.creditTier) }}
+              </el-tag>
+              <span style="margin-left: 6px">{{ row.creditScore }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="内容" width="140">
             <template #default="{ row }">{{ row.counts.spots }} 条 / {{ row.counts.comments }} 评论</template>
           </el-table-column>
-          <el-table-column label="操作" min-width="260">
+          <el-table-column label="操作" min-width="320">
             <template #default="{ row }">
               <el-select
                 :model-value="row.role"
@@ -256,6 +323,7 @@ onMounted(async () => {
                 <el-option label="审核员" value="moderator" />
                 <el-option label="管理员" value="admin" />
               </el-select>
+              <el-button size="small" @click="openCredit(row)">信用</el-button>
               <el-button size="small" @click="muteUser(row)">禁言</el-button>
               <el-button v-if="row.status !== 'banned'" size="small" type="danger" plain @click="banUser(row)">
                 封禁
@@ -310,7 +378,15 @@ onMounted(async () => {
             <div>
               <strong>{{ item.spot.title }}</strong>
               <div class="muted">
-                作者 {{ item.spot.owner.nickname }} · 信用分 {{ item.spot.owner.creditScore }}
+                作者 {{ item.spot.owner.nickname }} ·
+                <el-tag
+                  :type="tierTagType(item.spot.owner.creditTier)"
+                  size="small"
+                  style="margin: 0 4px"
+                >
+                  {{ tierLabel(item.spot.owner.creditTier) }}
+                </el-tag>
+                信用分 {{ item.spot.owner.creditScore }}
               </div>
               <p style="margin: 8px 0 0; white-space: pre-wrap">申诉理由：{{ item.appealText }}</p>
               <p class="muted" style="margin: 6px 0 0">
@@ -341,6 +417,49 @@ onMounted(async () => {
         </el-table>
       </el-tab-pane>
     </el-tabs>
+
+    <el-drawer v-model="creditDrawer" :title="creditDrawerTitle" size="640px">
+      <div v-loading="creditLoading">
+        <template v-if="creditProfile">
+          <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px">
+            <span style="font-size: 40px; font-weight: 700">{{ creditProfile.score }}</span>
+            <el-tag :type="tierTagType(creditProfile.tier)" size="large">
+              {{ tierLabel(creditProfile.tier) }}
+            </el-tag>
+            <span class="muted">
+              通过 {{ creditProfile.decisionStats.approved }} / 驳回 {{ creditProfile.decisionStats.rejected }}
+            </span>
+            <div style="margin-left: auto; display: flex; gap: 8px">
+              <el-button size="small" @click="recomputeCredit">按流水重算</el-button>
+              <el-button size="small" type="warning" @click="adjustCredit">人工调整</el-button>
+            </div>
+          </div>
+
+          <el-descriptions :column="2" border size="small" style="margin-bottom: 16px">
+            <el-descriptions-item label="违规记录分">{{ creditProfile.breakdown.violation }}</el-descriptions-item>
+            <el-descriptions-item label="贡献奖励分">{{ creditProfile.breakdown.merit }}</el-descriptions-item>
+            <el-descriptions-item label="申诉/人工调整">{{ creditProfile.breakdown.adjustment }}</el-descriptions-item>
+            <el-descriptions-item label="通过率分">{{ creditProfile.breakdown.rate }}</el-descriptions-item>
+          </el-descriptions>
+
+          <el-table :data="creditProfile.events" size="small" max-height="420">
+            <el-table-column label="时间" width="160">
+              <template #default="{ row }">{{ new Date(row.occurredAt).toLocaleString("zh-CN") }}</template>
+            </el-table-column>
+            <el-table-column label="事件" width="130">
+              <template #default="{ row }">
+                {{ EVENT_LABEL[row.type] ?? row.type }}
+                <el-tag v-if="row.reversed" type="info" size="small">已撤销</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="reason" label="原因" min-width="160" show-overflow-tooltip />
+            <el-table-column label="分值" width="70">
+              <template #default="{ row }">{{ row.amount > 0 ? "+" : "" }}{{ row.amount }}</template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </div>
+    </el-drawer>
   </div>
 </template>
 

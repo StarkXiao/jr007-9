@@ -8,8 +8,73 @@ import { requireAuth } from "../../middleware/auth";
 import { prisma } from "../../db/prisma";
 import { AppError } from "../../utils/errors";
 import { logger } from "../../utils/logger";
+import { getCreditProfile, TIER_POLICY } from "../../services/moderation/credit";
 
 export const usersRouter = Router();
+
+/**
+ * 我的信用：总分、当前权限层、三个维度的分项、历史通过率与最近流水。
+ * 权限为什么被收紧必须可解释，否则用户只会觉得系统在针对他。
+ */
+usersRouter.get(
+  "/me/credit",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const profile = await getCreditProfile(req.user!.id);
+    res.json(
+      ok(req, {
+        score: profile.score,
+        tier: profile.tier,
+        policy: {
+          label: profile.policy.label,
+          description: profile.policy.description,
+          canSubmitSpots: profile.policy.canSubmitSpots,
+          canComment: profile.policy.canComment,
+          dailySpotMultiplier: profile.policy.dailySpotMultiplier,
+          maxSpotMedia: profile.policy.maxSpotMedia,
+          priorityBoost: profile.policy.priorityBoost,
+          commentRequiresPremoderation: profile.policy.commentRequiresPremoderation,
+        },
+        breakdown: profile.breakdown,
+        decisionStats: profile.decisionStats,
+        approvalRate:
+          profile.decisionStats.approved + profile.decisionStats.rejected === 0
+            ? null
+            : Number(
+                (
+                  profile.decisionStats.approved /
+                  (profile.decisionStats.approved + profile.decisionStats.rejected)
+                ).toFixed(3),
+              ),
+        nextGoal: profile.nextGoal,
+        events: profile.events,
+      }),
+    );
+  }),
+);
+
+/** 权限层字典，前端渲染说明与徽章时直接使用 */
+usersRouter.get(
+  "/credit/tiers",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    res.json(
+      ok(req, {
+        tiers: Object.values(TIER_POLICY).map((policy) => ({
+          tier: policy.tier,
+          label: policy.label,
+          description: policy.description,
+          canSubmitSpots: policy.canSubmitSpots,
+          canComment: policy.canComment,
+          dailySpotMultiplier: policy.dailySpotMultiplier,
+          maxSpotMedia: policy.maxSpotMedia,
+          priorityBoost: policy.priorityBoost,
+          commentRequiresPremoderation: policy.commentRequiresPremoderation,
+        })),
+      }),
+    );
+  }),
+);
 
 usersRouter.get(
   "/me/settings",

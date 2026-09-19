@@ -11,6 +11,7 @@ import { AUDIT_ACTIONS } from "../../config/constants";
 import { recordAudit } from "../../services/audit";
 import { notify } from "../../services/notify";
 import { moderationStats } from "../reviews/decisions";
+import { getCreditProfile, recordCreditEvent, recomputeCredit } from "../../services/moderation/credit";
 
 export const adminRouter = Router();
 
@@ -144,6 +145,11 @@ adminRouter.get(
           role: true,
           status: true,
           creditScore: true,
+          creditTier: true,
+          creditViolationScore: true,
+          creditAppealScore: true,
+          creditRateScore: true,
+          creditComputedAt: true,
           approvedCount: true,
           mutedUntil: true,
           banReason: true,
@@ -165,6 +171,13 @@ adminRouter.get(
           role: user.role,
           status: user.status,
           creditScore: user.creditScore,
+          creditTier: user.creditTier,
+          creditBreakdown: {
+            violation: user.creditViolationScore,
+            adjustment: user.creditAppealScore,
+            rate: user.creditRateScore,
+          },
+          creditComputedAt: user.creditComputedAt,
           approvedCount: user.approvedCount,
           mutedUntil: user.mutedUntil,
           banReason: user.banReason,
@@ -188,6 +201,105 @@ async function findUserByUuid(uuid: string) {
   if (!user) throw AppError.notFound("用户不存在");
   return user;
 }
+
+/** 用户信用档案：分项、历史通过率、近期流水 */
+adminRouter.get(
+  "/admin/users/:uuid/credit",
+  validate({ params: z.object({ uuid: z.string().uuid() }) }),
+  asyncHandler(async (req, res) => {
+    const user = await findUserByUuid(req.params.uuid);
+    const profile = await getCreditProfile(user.id);
+    res.json(
+      ok(req, {
+        user: { uuid: user.uuid, nickname: user.nickname },
+        score: profile.score,
+        tier: profile.tier,
+        policy: {
+          label: profile.policy.label,
+          description: profile.policy.description,
+          canSubmitSpots: profile.policy.canSubmitSpots,
+          canComment: profile.policy.canComment,
+          dailySpotMultiplier: profile.policy.dailySpotMultiplier,
+          maxSpotMedia: profile.policy.maxSpotMedia,
+        },
+        breakdown: profile.breakdown,
+        decisionStats: profile.decisionStats,
+        nextGoal: profile.nextGoal,
+        events: profile.events,
+      }),
+    );
+  }),
+);
+
+/**
+ * 管理员人工调整信用分。
+ * 调整以一条永久有效的 admin_adjust 流水落账，必须填写理由并留审计日志——
+ * 人工改分是最后的兜底手段，不能成为无痕迹的后门。
+ */
+adminRouter.post(
+  "/admin/users/:uuid/credit",
+  validate({
+    params: z.object({ uuid: z.string().uuid() }),
+    body: z.object({
+      amount: z.number().int().min(-100).max(100).refine((value) => value !== 0, "调整分值不能为 0"),
+      reason: z.string().trim().min(2).max(200),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const user = await findUserByUuid(req.params.uuid);
+
+    const result = await recordCreditEvent({
+      userId: user.id,
+      type: "admin_adjust",
+      amount: req.body.amount,
+      reason: req.body.reason,
+      actorId: req.user!.id,
+      targetType: "user",
+      targetId: user.id,
+    });
+
+    await recordAudit({
+      actorId: req.user!.id,
+      action: AUDIT_ACTIONS.USER_CREDIT_ADJUST,
+      targetType: "user",
+      targetId: user.id,
+      reason: req.body.reason,
+      after: { amount: req.body.amount, score: result.score, tier: result.tier },
+      req,
+    });
+
+    await notify({
+      userId: user.id,
+      type: "credit_tier_changed",
+      title: "管理员调整了你的信用分",
+      body: `调整 ${req.body.amount > 0 ? "+" : ""}${req.body.amount} 分，当前 ${result.score} 分。原因：${req.body.reason}`,
+      payload: { amount: req.body.amount, score: result.score, tier: result.tier },
+    });
+
+    res.json(ok(req, { score: result.score, tier: result.tier, amount: req.body.amount }));
+  }),
+);
+
+/** 强制重算（运营排查用，正常情况下由定时任务每天自动执行） */
+adminRouter.post(
+  "/admin/users/:uuid/credit/recompute",
+  validate({ params: z.object({ uuid: z.string().uuid() }) }),
+  asyncHandler(async (req, res) => {
+    const user = await findUserByUuid(req.params.uuid);
+    const result = await recomputeCredit(user.id, { notifyOnTierChange: false });
+    res.json(
+      ok(req, {
+        score: result.score,
+        tier: result.tier,
+        breakdown: {
+          violation: result.violationScore,
+          adjustment: result.adjustmentScore,
+          rate: result.rateScore,
+        },
+      }),
+    );
+  }),
+);
 
 adminRouter.patch(
   "/admin/users/:uuid/role",

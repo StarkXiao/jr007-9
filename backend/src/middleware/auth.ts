@@ -36,6 +36,7 @@ async function loadUser(uuid: string): Promise<AuthUser | undefined> {
       status: true,
       nickname: true,
       creditScore: true,
+      creditTier: true,
       mutedUntil: true,
     },
   });
@@ -52,9 +53,10 @@ async function loadUser(uuid: string): Promise<AuthUser | undefined> {
       id: user.id,
       uuid: user.uuid,
       role: user.role,
-      status: "active",
+      status: "active" as const,
       nickname: user.nickname,
       creditScore: user.creditScore,
+      creditTier: user.creditTier,
     };
   }
 
@@ -65,6 +67,7 @@ async function loadUser(uuid: string): Promise<AuthUser | undefined> {
     status: user.status,
     nickname: user.nickname,
     creditScore: user.creditScore,
+    creditTier: user.creditTier,
   };
 }
 

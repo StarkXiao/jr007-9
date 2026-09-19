@@ -56,7 +56,7 @@ export async function listQueue(query: QueueQuery) {
             title: true,
             status: true,
             category: { select: { code: true, name: true, color: true, icon: true } },
-            owner: { select: { uuid: true, nickname: true, creditScore: true, approvedCount: true } },
+            owner: { select: { uuid: true, nickname: true, creditScore: true, creditTier: true, approvedCount: true } },
           },
         },
         assignee: { select: { nickname: true } },
@@ -99,6 +99,7 @@ export async function listQueue(query: QueueQuery) {
           uuid: task.spot.owner.uuid,
           nickname: task.spot.owner.nickname,
           creditScore: task.spot.owner.creditScore,
+          creditTier: task.spot.owner.creditTier,
           approvedCount: task.spot.owner.approvedCount,
         },
       },
@@ -169,7 +170,7 @@ export async function getTaskDetail(taskId: bigint, moderator: AuthUser) {
       spot: {
         include: {
           category: { include: { schemas: { where: { isCurrent: true }, take: 1 } } },
-          owner: { select: { uuid: true, nickname: true, creditScore: true, approvedCount: true } },
+          owner: { select: { uuid: true, nickname: true, creditScore: true, creditTier: true, approvedCount: true } },
           media: {
             orderBy: { id: "asc" },
             include: { blurRegions: { where: { ignored: false }, orderBy: { id: "asc" } } },
@@ -250,6 +251,7 @@ export async function getTaskDetail(taskId: bigint, moderator: AuthUser) {
         uuid: task.spot.owner.uuid,
         nickname: task.spot.owner.nickname,
         creditScore: task.spot.owner.creditScore,
+        creditTier: task.spot.owner.creditTier,
         approvedCount: task.spot.owner.approvedCount,
       },
       history: task.spot.reviewTasks,

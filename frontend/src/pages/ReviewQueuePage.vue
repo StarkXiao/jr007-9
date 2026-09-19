@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api } from "@/api/client";
 import type { Paged, ReviewQueueItem } from "@/api/types";
+import { tierLabel, tierTagType } from "@/config/credit";
 
 const router = useRouter();
 
@@ -119,8 +120,11 @@ onMounted(load);
             <strong>{{ row.spot.title }}</strong>
           </div>
           <div class="muted" style="margin-top: 4px">
-            作者 {{ row.spot.author.nickname }} · 信用分 {{ row.spot.author.creditScore }} ·
-            已通过 {{ row.spot.author.approvedCount }} 条
+            作者 {{ row.spot.author.nickname }} ·
+            <el-tag :type="tierTagType(row.spot.author.creditTier)" size="small" style="margin: 0 4px">
+              {{ tierLabel(row.spot.author.creditTier) }}
+            </el-tag>
+            信用分 {{ row.spot.author.creditScore }} · 已通过 {{ row.spot.author.approvedCount }} 条
           </div>
         </template>
       </el-table-column>

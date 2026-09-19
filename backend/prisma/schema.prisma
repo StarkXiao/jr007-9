@@ -85,6 +85,30 @@ enum BlurAlgorithm {
   gaussian
 }
 
+enum CreditEventType {
+  // 违规扣分（半衰期衰减）
+  spot_rejected
+  auto_rejected_override
+  comment_hidden
+  report_confirmed
+  // 正向贡献（半衰期衰减）
+  spot_approved
+  // 申诉改判：返还原扣分（永久有效）+ 错判补偿
+  appeal_restored
+  appeal_compensation
+  appeal_upheld
+  // 管理员人工调整（decayDays = null 时永久有效）
+  admin_adjust
+}
+
+enum CreditTier {
+  new
+  trusted
+  standard
+  restricted
+  frozen
+}
+
 model User {
   id            BigInt     @id @default(autoincrement())
   uuid          String     @unique @default(uuid()) @db.Uuid
@@ -96,7 +120,14 @@ model User {
   role          UserRole   @default(user)
   status        UserStatus @default(active)
   creditScore   Int        @default(100) @map("credit_score") @db.SmallInt
+  creditTier    CreditTier @default(new) @map("credit_tier")
   approvedCount Int        @default(0) @map("approved_count")
+  // 信用分三个计算维度的快照，每次重算时刷新，供审核台与个人页直接展示。
+  // 用 INTEGER：累计违规/奖励不受单维度 0–100 的钳制，可能超出 SMALLINT 范围。
+  creditViolationScore Int @default(0) @map("credit_violation_score")
+  creditAppealScore    Int @default(0) @map("credit_appeal_score")
+  creditRateScore      Int @default(0) @map("credit_rate_score")
+  creditComputedAt     DateTime? @map("credit_computed_at") @db.Timestamptz(6)
   mutedUntil    DateTime?  @map("muted_until") @db.Timestamptz(6)
   banReason     String?    @map("ban_reason")
   emailNotify   Boolean    @default(true) @map("email_notify")
@@ -122,8 +153,11 @@ model User {
   blurRegions       BlurRegion[]
   categorySchemas   CategorySchema[]
   settings          UserSetting?
+  creditEvents      CreditEvent[]
+  creditActions     CreditEvent[]    @relation("CreditEventActor")
 
   @@index([role, status], map: "idx_users_role_status")
+  @@index([creditTier], map: "idx_users_credit_tier")
   @@map("users")
 }
 
@@ -470,4 +504,36 @@ model AuditLog {
   @@index([targetType, targetId, createdAt], map: "idx_audit_target")
   @@index([action, createdAt], map: "idx_audit_action")
   @@map("audit_logs")
+}
+
+// 信用分流水账：信用分永远由流水 + 历史通过率重算得出，
+// 不允许任何代码路径直接写 users.credit_score，保证可追溯、可回放、可解释。
+model CreditEvent {
+  id          BigInt          @id @default(autoincrement())
+  userId      BigInt          @map("user_id")
+  type        CreditEventType
+  // 记账时刻的名义分值：违规为负、奖励为正。实际生效值还要乘时间衰减
+  amount      Int             @db.SmallInt
+  // 空 = 永久有效（申诉返还、管理员调整）；否则按半衰期 180 天指数衰减
+  decayDays   Int?            @map("decay_days")
+  reasonCode  String?         @map("reason_code") @db.VarChar(48)
+  reason      String?
+  targetType  String?         @map("target_type") @db.VarChar(16)
+  targetId    BigInt?         @map("target_id")
+  // 申诉改判时指向被撤销的原始违规流水；被指向的原流水计分被排除
+  reversesId  BigInt?         @map("reverses_id")
+  actorId     BigInt?         @map("actor_id")
+  meta        Json?
+  occurredAt  DateTime        @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reverses CreditEvent? @relation("CreditEventReversal", fields: [reversesId], references: [id])
+  reversed CreditEvent[] @relation("CreditEventReversal")
+  actor    User?        @relation("CreditEventActor", fields: [actorId], references: [id])
+
+  @@index([userId, occurredAt], map: "idx_credit_user_time")
+  @@index([userId, type], map: "idx_credit_user_type")
+  @@index([reversesId], map: "idx_credit_reverses")
+  @@map("credit_events")
 }

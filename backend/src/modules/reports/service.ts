@@ -15,7 +15,7 @@ import { AppError } from "../../utils/errors";
 import { parsePagination, pagedResult } from "../../utils/pagination";
 import { notify } from "../../services/notify";
 import { recordAudit } from "../../services/audit";
-import { adjustCredit, CREDIT_DELTAS } from "../../services/moderation/credit";
+import { recordCreditEvent } from "../../services/moderation/credit";
 import { revokePublicVariants } from "../media/service";
 import { isAdmin } from "../../types/auth";
 import type { AuthUser } from "../../types/auth";
@@ -320,7 +320,20 @@ async function performResolveAction(
   type: ReportTargetType,
   targetId: bigint,
   reason: ReportReason,
+  moderator?: AuthUser,
+  note?: string,
 ): Promise<{ action: string; affectedOwnerId?: bigint; needsPrivacyRecheck?: boolean }> {
+  const penalty = (userId: bigint, targetType: string) =>
+    recordCreditEvent({
+      userId,
+      type: "report_confirmed",
+      reasonCode: reason,
+      reason: `举报成立：${REPORT_REASONS[reason]}${note ? `（${note}）` : ""}`,
+      targetType,
+      targetId,
+      actorId: moderator?.id ?? null,
+    });
+
   switch (type) {
     case "spot": {
       const spot = await prisma.spot.findUnique({
@@ -333,6 +346,8 @@ async function performResolveAction(
         where: { id: spot.id },
         data: { status: "hidden", publicLat: null, publicLng: null },
       });
+      // 条目被举报成立等同于一次严重违规（此前下架不扣分，处罚力度与通知文案不匹配）
+      await penalty(spot.ownerId, "spot");
       return { action: "spot_hidden", affectedOwnerId: spot.ownerId };
     }
     case "comment": {
@@ -346,7 +361,7 @@ async function performResolveAction(
         where: { id: comment.id },
         data: { status: "hidden", hiddenReason: `举报成立：${REPORT_REASONS[reason]}` },
       });
-      await adjustCredit(comment.userId, CREDIT_DELTAS.REPORT_CONFIRMED_ON_USER);
+      await penalty(comment.userId, "comment");
       return { action: "comment_hidden", affectedOwnerId: comment.userId };
     }
     case "media": {
@@ -358,13 +373,13 @@ async function performResolveAction(
 
       // 隐私类举报成立时必须让公开版本立即失效，不能等下一次渲染
       await revokePublicVariants(asset.uuid);
-      await adjustCredit(asset.ownerId, CREDIT_DELTAS.REPORT_CONFIRMED_ON_USER);
+      await penalty(asset.ownerId, "media");
       return { action: "media_variants_revoked", affectedOwnerId: asset.ownerId, needsPrivacyRecheck: true };
     }
     default: {
       const user = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
       if (!user) throw AppError.notFound("被举报的用户不存在");
-      await adjustCredit(user.id, CREDIT_DELTAS.REPORT_CONFIRMED_ON_USER);
+      await penalty(user.id, "user");
       return { action: "credit_penalty", affectedOwnerId: user.id };
     }
   }
@@ -379,7 +394,7 @@ export async function resolveReport(reportId: bigint, moderator: AuthUser, note:
 
   const type = report.targetType as ReportTargetType;
   const reason = report.reason as ReportReason;
-  const outcome = await performResolveAction(type, report.targetId, reason);
+  const outcome = await performResolveAction(type, report.targetId, reason, moderator, note);
 
   await prisma.$transaction([
     prisma.report.update({

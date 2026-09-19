@@ -10,7 +10,7 @@ import { prisma } from "../../db/prisma";
 import { AppError } from "../../utils/errors";
 import { parsePagination, pagedResult } from "../../utils/pagination";
 import { checkText } from "../../services/moderation/contentFilter";
-import { adjustCredit, CREDIT_DELTAS } from "../../services/moderation/credit";
+import { recordCreditEvent, TIER_POLICY } from "../../services/moderation/credit";
 import { notify } from "../../services/notify";
 import { recordAudit } from "../../services/audit";
 import { serializeComment } from "../shared/serialize";
@@ -109,6 +109,15 @@ export async function createComment(
   });
   if (!spot || spot.status !== "published") throw AppError.notFound("该地点不存在或尚未发布");
 
+  // 冻结层不能发表评论（回复、举报等其他互动仍可用）
+  if (!(TIER_POLICY[user.creditTier] ?? TIER_POLICY.standard).canComment) {
+    throw new AppError(
+      403,
+      ERROR_CODES.PUBLISH_FROZEN,
+      "信用分过低，评论权限已被冻结；申诉成功或信用恢复后会自动解除。",
+    );
+  }
+
   assertCommentContent(input.body);
 
   let parentAuthorId: bigint | null = null;
@@ -148,9 +157,13 @@ export async function createComment(
     throw AppError.conflict(ERROR_CODES.RATE_LIMITED, "同一个地点 24 小时内最多评论 3 次");
   }
 
-  // 分级审核：新用户先审后发，可信用户先发后审
+  // 分级审核由信用层驱动：受限/新用户先审后发，正常、可信用户先发后审；
+  // 信用分跌破预审阈值的正常层用户也降级为预审。
+  const tierPolicy = TIER_POLICY[user.creditTier] ?? TIER_POLICY.standard;
   const trusted =
-    user.creditScore >= env.PREMODERATE_CREDIT_THRESHOLD && approvedComments >= 3;
+    !tierPolicy.commentRequiresPremoderation &&
+    (tierPolicy.tier === "trusted" ||
+      (user.creditScore >= env.PREMODERATE_CREDIT_THRESHOLD && approvedComments >= 3));
   const status: CommentStatus = trusted ? "visible" : "pending";
 
   const comment = await prisma.comment.create({
@@ -295,7 +308,14 @@ export async function hideComment(commentId: bigint, moderator: AuthUser, reason
     data: { status: "hidden", hiddenReason: reason },
   });
 
-  await adjustCredit(comment.userId, CREDIT_DELTAS.COMMENT_HIDDEN);
+  await recordCreditEvent({
+    userId: comment.userId,
+    type: "comment_hidden",
+    reason,
+    targetType: "comment",
+    targetId: comment.id,
+    actorId: moderator.id,
+  });
 
   await recordAudit({
     actorId: moderator.id,

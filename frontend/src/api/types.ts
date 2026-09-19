@@ -97,12 +97,15 @@ export interface NotificationItem {
   createdAt: string;
 }
 
+export type CreditTier = "new" | "standard" | "trusted" | "restricted" | "frozen";
+
 export interface CurrentUser {
   uuid: string;
   nickname: string;
   role: "visitor" | "user" | "moderator" | "admin";
   status: string;
   creditScore: number;
+  creditTier: CreditTier;
   approvedCount: number;
   email: string | null;
   phone: string | null;
@@ -113,6 +116,40 @@ export interface CurrentUser {
     notifyInapp: boolean;
     locale: string;
   };
+}
+
+export interface CreditProfile {
+  score: number;
+  tier: CreditTier;
+  policy: {
+    label: string;
+    description: string;
+    canSubmitSpots: boolean;
+    canComment: boolean;
+    dailySpotMultiplier: number;
+    maxSpotMedia: number;
+    priorityBoost: number;
+    commentRequiresPremoderation: boolean;
+  };
+  breakdown: { violation: number; merit: number; adjustment: number; rate: number };
+  decisionStats: { approved: number; rejected: number };
+  approvalRate: number | null;
+  nextGoal: { tier: CreditTier; scoreGap: number; approvedGap: number } | null;
+  events: CreditEvent[];
+}
+
+export interface CreditEvent {
+  id: string;
+  type: string;
+  amount: number;
+  effective: number;
+  decayDays: number | null;
+  reasonCode: string | null;
+  reason: string | null;
+  targetType: string | null;
+  targetId: string | null;
+  reversed: boolean;
+  occurredAt: string;
 }
 
 export interface UploadedAsset {
@@ -166,7 +203,7 @@ export interface ReviewQueueItem {
     status: string;
     category: { code: string; name: string; color: string; icon: string };
     mediaCount: number;
-    author: { uuid: string; nickname: string; creditScore: number; approvedCount: number };
+    author: { uuid: string; nickname: string; creditScore: number; creditTier: CreditTier; approvedCount: number };
   };
 }
 
@@ -203,7 +240,7 @@ export interface ReviewTaskDetail {
     fuzzRadiusM: number;
     addressText: string | null;
     createdAt: string;
-    author: { uuid: string; nickname: string; creditScore: number; approvedCount: number };
+    author: { uuid: string; nickname: string; creditScore: number; creditTier: CreditTier; approvedCount: number };
     history: Array<{
       id: string;
       status: string;

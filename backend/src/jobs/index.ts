@@ -1,7 +1,7 @@
 import { prisma } from "../db/prisma";
 import { env } from "../config/env";
 import { STALE_REPORT_THRESHOLD } from "../config/constants";
-import { computeFreshness } from "../services/moderation/credit";
+import { computeFreshness, creditSweep } from "../services/moderation/credit";
 import { purgeOriginal } from "../modules/media/service";
 import { notify } from "../services/notify";
 import { logger } from "../utils/logger";
@@ -182,6 +182,14 @@ export async function purgeOriginalImages(): Promise<{ purged: number }> {
   }
 
   return { purged };
+}
+
+/**
+ * 信用分巡检：每天一次。
+ * 违规与奖励流水按半衰期衰减，即使没有新事件，分数也会随时间回升、权限层恢复。
+ */
+export async function creditDecaySweep(): Promise<{ recomputed: number; tierChanged: number }> {
+  return creditSweep(500);
 }
 
 /** 日常清理：过期令牌、超期通知、失效的审核锁 */

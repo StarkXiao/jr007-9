@@ -19,6 +19,7 @@ export const ERROR_CODES = {
   DUPLICATE_REPORT: "DUPLICATE_REPORT",
   ALREADY_CONFIRMED: "ALREADY_CONFIRMED",
   RATE_LIMITED: "RATE_LIMITED",
+  PUBLISH_FROZEN: "PUBLISH_FROZEN",
   INTERNAL_ERROR: "INTERNAL_ERROR",
 } as const;
 
@@ -67,6 +68,7 @@ export const NOTIFICATION_TYPES = {
   comment_hidden: "评论被隐藏",
   report_result: "举报处理结果",
   spot_stale: "条目信息可能已过期",
+  credit_tier_changed: "信用等级变更",
 } as const;
 
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;
@@ -105,6 +107,7 @@ export const AUDIT_ACTIONS = {
   USER_UNBAN: "user.unban",
   USER_MUTE: "user.mute",
   USER_ROLE: "user.role",
+  USER_CREDIT_ADJUST: "user.credit.adjust",
   SPOT_HIDE: "spot.hide",
   SPOT_RESTORE: "spot.restore",
   REPORT_RESOLVE: "report.resolve",

@@ -7,7 +7,7 @@ import { assertAttributesValid } from "../categories/schemaValidator";
 import { requireCategoryByCode } from "../categories/service";
 import { assertAllPublishable } from "../media/service";
 import { notify } from "../../services/notify";
-import { adjustCredit, CREDIT_DELTAS, incrementApprovedCount } from "../../services/moderation/credit";
+import { incrementApprovedCount, recordCreditEvent, settleAppealOverturn, settleAppealUpheld } from "../../services/moderation/credit";
 import { recordAudit } from "../../services/audit";
 import { logger } from "../../utils/logger";
 import type { AuthUser } from "../../types/auth";
@@ -125,7 +125,18 @@ export async function approveTask(
   ]);
 
   await incrementApprovedCount(task.spot.ownerId);
-  await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.SPOT_APPROVED);
+  // 申诉改判通过也走这个函数入口（isAppeal 为 true），
+  // 但申诉的信用结算包含返还/补偿，改在 decideAppeal 里统一处理。
+  if (!isAppeal) {
+    await recordCreditEvent({
+      userId: task.spot.ownerId,
+      type: "spot_approved",
+      reason: "审核通过并发布",
+      targetType: "review_task",
+      targetId: task.id,
+      actorId: moderator.id,
+    });
+  }
 
   await recordAudit({
     actorId: moderator.id,
@@ -227,7 +238,15 @@ export async function rejectTask(
     }),
   ]);
 
-  await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.SPOT_REJECTED);
+  await recordCreditEvent({
+    userId: task.spot.ownerId,
+    type: "spot_rejected",
+    reasonCode: payload.reasonCode,
+    reason: decisionReason,
+    targetType: "review_task",
+    targetId: task.id,
+    actorId: moderator.id,
+  });
 
   await recordAudit({
     actorId: moderator.id,
@@ -266,7 +285,7 @@ export async function listAppeals() {
           title: true,
           status: true,
           category: { select: { name: true, code: true } },
-          owner: { select: { nickname: true, creditScore: true } },
+          owner: { select: { nickname: true, creditScore: true, creditTier: true } },
         },
       },
       appealOf: { select: { id: true, reasonCode: true, decisionReason: true, decidedAt: true } },
@@ -305,6 +324,10 @@ export async function decideAppeal(
   if (task.status !== "appealed") {
     throw AppError.unprocessable(ERROR_CODES.SPOT_STATE_INVALID, "该申诉已处理过");
   }
+  if (!task.appealOf) {
+    throw AppError.unprocessable(ERROR_CODES.SPOT_STATE_INVALID, "申诉缺少原审核记录");
+  }
+  const originalTaskId = task.appealOf.id;
 
   const now = new Date();
 
@@ -322,6 +345,9 @@ export async function decideAppeal(
       }),
       prisma.spot.update({ where: { id: task.spotId }, data: { status: "rejected_final" } }),
     ]);
+
+    // 维持驳回不再扣分（原扣分仍然有效），只留零分流水记录申诉行为
+    await settleAppealUpheld({ userId: task.spot.ownerId, originalTaskId, reason, actorId: admin.id });
 
     await recordAudit({
       actorId: admin.id,
@@ -376,7 +402,14 @@ export async function decideAppeal(
   ]);
 
   await incrementApprovedCount(task.spot.ownerId);
-  await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.APPEAL_UPHELD);
+  // 申诉改判的信用结算：撤销原违规扣分 + 错判补偿 + 发布奖励，一次完成
+  await settleAppealOverturn({
+    userId: task.spot.ownerId,
+    originalTaskId,
+    grantApprovedMerit: true,
+    reason,
+    actorId: admin.id,
+  });
 
   await recordAudit({
     actorId: admin.id,

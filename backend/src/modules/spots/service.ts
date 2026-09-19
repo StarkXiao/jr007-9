@@ -10,7 +10,6 @@ import { prisma, toJsonValue } from "../../db/prisma";
 import { AppError } from "../../utils/errors";
 import { parsePagination, pagedResult } from "../../utils/pagination";
 import { assertNoBlockedContent, assertNoPii, checkText } from "../../services/moderation/contentFilter";
-import { computeFreshness } from "../../services/moderation/credit";
 import { boundingBox, fuzzCoordinates, haversineMeters, isValidLatLng, reverseGeocode } from "../../services/geo";
 import { assertAttributesValid, validateAttributes } from "../categories/schemaValidator";
 import { requireCategoryByCode } from "../categories/service";
@@ -18,7 +17,12 @@ import { serializeSpot } from "../shared/serialize";
 import type { AuthUser } from "../../types/auth";
 import { isModerator } from "../../types/auth";
 import { notify } from "../../services/notify";
-import { adjustCredit, CREDIT_DELTAS } from "../../services/moderation/credit";
+import {
+  computeFreshness,
+  effectiveDailySpotLimit,
+  recordCreditEvent,
+  TIER_POLICY,
+} from "../../services/moderation/credit";
 import { logger } from "../../utils/logger";
 import type { CreateSpotInput, ListSpotsQuery, UpdateSpotInput } from "./schemas";
 
@@ -274,10 +278,27 @@ async function attachMedia(spotId: bigint | null, ownerId: bigint, mediaUuids: s
 }
 
 export async function createDraft(user: AuthUser, input: CreateSpotInput) {
+  const tierPolicy = TIER_POLICY[user.creditTier] ?? TIER_POLICY.standard;
+
+  // 冻结层不能新开记录；编辑既有草稿、申诉的通道仍然保留
+  if (!tierPolicy.canSubmitSpots) {
+    throw new AppError(
+      403,
+      ERROR_CODES.PUBLISH_FROZEN,
+      "信用分过低，发布权限已被冻结。你仍可修改被驳回的内容或提出申诉，信用恢复后会自动解除。",
+    );
+  }
+
   const category = await requireCategoryByCode(input.categoryCode);
 
   if (!isValidLatLng(input.lat, input.lng)) throw AppError.badRequest("坐标不合法");
-  if (input.mediaUuids.length > 6) throw AppError.badRequest("最多上传 6 张图片");
+  if (input.mediaUuids.length > tierPolicy.maxSpotMedia) {
+    throw AppError.badRequest(
+      tierPolicy.tier === "restricted"
+        ? `受限等级单条记录最多上传 ${tierPolicy.maxSpotMedia} 张图片`
+        : "最多上传 6 张图片",
+    );
+  }
 
   assertNoBlockedContent(input.title, input.description);
 
@@ -285,10 +306,12 @@ export async function createDraft(user: AuthUser, input: CreateSpotInput) {
   const todayCount = await prisma.spot.count({
     where: { ownerId: user.id, createdAt: { gte: since }, status: { not: "draft" } },
   });
-  if (todayCount >= env.DAILY_SPOT_LIMIT) {
+  // 每日名额随信用层动态变化：受限层只有基准的四分之一，可信层翻倍
+  const dailyLimit = effectiveDailySpotLimit(env.DAILY_SPOT_LIMIT, user.creditTier);
+  if (todayCount >= dailyLimit) {
     throw AppError.conflict(
       ERROR_CODES.RATE_LIMITED,
-      `每天最多提交 ${env.DAILY_SPOT_LIMIT} 条，今天已达上限，明天再来吧`,
+      `你当前的信用等级每天最多提交 ${dailyLimit} 条，今天已达上限，明天再来吧`,
     );
   }
 
@@ -572,6 +595,15 @@ export async function submitForReview(uuid: string, user: AuthUser, options: { f
     );
   }
 
+  // 冻结层不能把新内容推进审核队列（编辑被驳回内容不受影响，但提交受影响）
+  if (!(TIER_POLICY[user.creditTier] ?? TIER_POLICY.standard).canSubmitSpots) {
+    throw new AppError(
+      403,
+      ERROR_CODES.PUBLISH_FROZEN,
+      "信用分过低，暂时不能提交审核。可以先对被驳回的记录提出申诉。",
+    );
+  }
+
   const category = await requireCategoryByCode(spot.category.code);
 
   // 提交时必须齐备必填属性——草稿宽容，提交严格
@@ -602,13 +634,16 @@ export async function submitForReview(uuid: string, user: AuthUser, options: { f
 
   const autoCheck = await runAutoCheck(spot.id);
   const slaDueAt = new Date(Date.now() + env.REVIEW_SLA_HOURS * 3600000);
+  // 可信贡献者走快速通道：隐私问题仍是最高优先级，其余任务按信用层加优先级
+  const tierBoost = (TIER_POLICY[user.creditTier] ?? TIER_POLICY.standard).priorityBoost;
+  const basePriority = autoCheck.issues.some((issue) => issue.code === "PRIVACY_NOT_READY") ? 5 : 0;
 
   const task = await prisma.reviewTask.create({
     data: {
       spotId: spot.id,
       revisionId: revision.id,
       status: autoCheck.passed ? "pending" : "auto_rejected",
-      priority: autoCheck.issues.some((issue) => issue.code === "PRIVACY_NOT_READY") ? 5 : 0,
+      priority: basePriority + (autoCheck.passed ? tierBoost : 0),
       autoCheck: toJsonValue({ issues: autoCheck.issues, meta: autoCheck.meta, passed: autoCheck.passed }),
       slaDueAt,
     },
@@ -621,10 +656,17 @@ export async function submitForReview(uuid: string, user: AuthUser, options: { f
     data: { status: nextStatus, currentRevisionId: revision.id, addressText },
   });
 
-  // 无视自动预检、坚持转人工复核的，扣信用分。
+  // 无视自动预检、坚持转人工复核的，记违规流水（信用分重算时体现）。
   // 这是"误判可以申诉"与"别拿人工审核当免费通道"之间的平衡。
   if (options.fromAutoRejected) {
-    await adjustCredit(spot.ownerId, CREDIT_DELTAS.SPOT_AUTO_REJECTED_OVERRIDE);
+    await recordCreditEvent({
+      userId: spot.ownerId,
+      type: "auto_rejected_override",
+      reason: "自动预检未通过，用户坚持转人工复核",
+      targetType: "spot",
+      targetId: spot.id,
+      actorId: user.id,
+    });
   }
 
   if (!autoCheck.passed) {

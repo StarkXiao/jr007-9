@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { api, mediaUrl } from "@/api/client";
 import type { ReviewTaskDetail } from "@/api/types";
 import BlurEditor from "@/components/BlurEditor.vue";
+import { tierLabel, tierTagType } from "@/config/credit";
 
 const route = useRoute();
 const router = useRouter();
@@ -227,8 +228,11 @@ onMounted(load);
           <el-card shadow="never" style="margin-top: 12px">
             <template #header>作者情况</template>
             <p style="margin: 0">
-              {{ task.spot.author.nickname }} · 信用分 {{ task.spot.author.creditScore }} ·
-              已通过 {{ task.spot.author.approvedCount }} 条
+              {{ task.spot.author.nickname }} ·
+              <el-tag :type="tierTagType(task.spot.author.creditTier)" size="small" style="margin: 0 4px">
+                {{ tierLabel(task.spot.author.creditTier) }}
+              </el-tag>
+              信用分 {{ task.spot.author.creditScore }} · 已通过 {{ task.spot.author.approvedCount }} 条
             </p>
             <el-divider />
             <p class="muted" style="margin: 0 0 6px">历史审核记录</p>

@@ -6,7 +6,7 @@ import type { CurrentUser } from "@/api/types";
 interface LoginResult {
   accessToken: string;
   expiresIn: number;
-  user: { uuid: string; nickname: string; role: string; creditScore: number };
+  user: { uuid: string; nickname: string; role: string; creditScore: number; creditTier: string };
 }
 
 export const useAuthStore = defineStore("auth", () => {

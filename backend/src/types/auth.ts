@@ -1,4 +1,4 @@
-import type { UserStatus, UserRole } from "@prisma/client";
+import type { UserStatus, UserRole, CreditTier } from "@prisma/client";
 
 export interface AuthUser {
   id: bigint;
@@ -7,6 +7,7 @@ export interface AuthUser {
   status: UserStatus;
   nickname: string;
   creditScore: number;
+  creditTier: CreditTier;
 }
 
 export const ROLE_RANK: Record<UserRole, number> = {

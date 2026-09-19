@@ -6,6 +6,8 @@ import { api } from "@/api/client";
 import type { Paged, Spot } from "@/api/types";
 import { useAuthStore } from "@/stores/auth";
 import { useCatalogStore } from "@/stores/catalog";
+import CreditPanel from "@/components/CreditPanel.vue";
+import { TIER_LABEL, TIER_TAG_TYPE } from "@/config/credit";
 
 const auth = useAuthStore();
 const catalog = useCatalogStore();
@@ -152,6 +154,10 @@ onMounted(async () => {
     <h1 class="page-title">我的空间</h1>
 
     <el-tabs v-model="tab">
+      <el-tab-pane label="信用与权限" name="credit">
+        <CreditPanel />
+      </el-tab-pane>
+
       <el-tab-pane label="我的记录" name="contributions">
         <div style="display: flex; gap: 10px; margin-bottom: 12px; align-items: center">
           <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width: 180px" @change="loadContributions">
@@ -159,6 +165,14 @@ onMounted(async () => {
           </el-select>
           <el-button type="primary" @click="router.push({ name: 'spot-new' })">记录新细节</el-button>
           <span class="muted">
+            <el-tag
+              v-if="auth.user"
+              :type="TIER_TAG_TYPE[auth.user.creditTier]"
+              size="small"
+              style="margin-right: 6px"
+            >
+              {{ TIER_LABEL[auth.user.creditTier] }}
+            </el-tag>
             信用分 {{ auth.user?.creditScore }} · 已通过 {{ auth.user?.approvedCount }} 条
           </span>
         </div>
