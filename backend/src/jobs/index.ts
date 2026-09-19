@@ -1,7 +1,7 @@
 import { prisma } from "../db/prisma";
 import { env } from "../config/env";
 import { STALE_REPORT_THRESHOLD } from "../config/constants";
-import { computeFreshness } from "../services/moderation/credit";
+import { computeFreshness, reconcilePassRateAdjustment } from "../services/moderation/credit";
 import { purgeOriginal } from "../modules/media/service";
 import { notify } from "../services/notify";
 import { logger } from "../utils/logger";
@@ -182,6 +182,33 @@ export async function purgeOriginalImages(): Promise<{ purged: number }> {
   }
 
   return { purged };
+}
+
+/**
+ * 信用巡检：每天一次。
+ * 按历史通过率对信用分做幂等修正——通过率高加分、过低扣分，
+ * 通过率回到中间档时之前的修正会自动退回。
+ */
+export async function creditSweep(): Promise<{ scanned: number; adjusted: number }> {
+  // 只扫描有已决审核记录的用户，其余人的通过率没有统计意义
+  const candidates = await prisma.user.findMany({
+    where: {
+      deletedAt: null,
+      spots: { some: { reviewTasks: { some: { decidedAt: { not: null } } } } },
+    },
+    select: { id: true },
+  });
+
+  let adjusted = 0;
+  for (const user of candidates) {
+    const result = await reconcilePassRateAdjustment(user.id).catch((error) => {
+      logger.warn({ err: (error as Error).message, userId: user.id.toString() }, "通过率修正失败");
+      return null;
+    });
+    if (result?.adjusted) adjusted += 1;
+  }
+
+  return { scanned: candidates.length, adjusted };
 }
 
 /** 日常清理：过期令牌、超期通知、失效的审核锁 */

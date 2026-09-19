@@ -15,7 +15,7 @@ import { AppError } from "../../utils/errors";
 import { parsePagination, pagedResult } from "../../utils/pagination";
 import { notify } from "../../services/notify";
 import { recordAudit } from "../../services/audit";
-import { adjustCredit, CREDIT_DELTAS } from "../../services/moderation/credit";
+import { applyCreditEvent } from "../../services/moderation/credit";
 import { revokePublicVariants } from "../media/service";
 import { isAdmin } from "../../types/auth";
 import type { AuthUser } from "../../types/auth";
@@ -333,6 +333,10 @@ async function performResolveAction(
         where: { id: spot.id },
         data: { status: "hidden", publicLat: null, publicLng: null },
       });
+      await applyCreditEvent(spot.ownerId, "report_confirmed", {
+        targetType: "spot",
+        targetId: spot.id,
+      });
       return { action: "spot_hidden", affectedOwnerId: spot.ownerId };
     }
     case "comment": {
@@ -346,7 +350,10 @@ async function performResolveAction(
         where: { id: comment.id },
         data: { status: "hidden", hiddenReason: `举报成立：${REPORT_REASONS[reason]}` },
       });
-      await adjustCredit(comment.userId, CREDIT_DELTAS.REPORT_CONFIRMED_ON_USER);
+      await applyCreditEvent(comment.userId, "report_confirmed", {
+        targetType: "comment",
+        targetId: comment.id,
+      });
       return { action: "comment_hidden", affectedOwnerId: comment.userId };
     }
     case "media": {
@@ -358,13 +365,19 @@ async function performResolveAction(
 
       // 隐私类举报成立时必须让公开版本立即失效，不能等下一次渲染
       await revokePublicVariants(asset.uuid);
-      await adjustCredit(asset.ownerId, CREDIT_DELTAS.REPORT_CONFIRMED_ON_USER);
+      await applyCreditEvent(asset.ownerId, "report_confirmed", {
+        targetType: "media",
+        targetId,
+      });
       return { action: "media_variants_revoked", affectedOwnerId: asset.ownerId, needsPrivacyRecheck: true };
     }
     default: {
       const user = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
       if (!user) throw AppError.notFound("被举报的用户不存在");
-      await adjustCredit(user.id, CREDIT_DELTAS.REPORT_CONFIRMED_ON_USER);
+      await applyCreditEvent(user.id, "report_confirmed", {
+        targetType: "user",
+        targetId,
+      });
       return { action: "credit_penalty", affectedOwnerId: user.id };
     }
   }

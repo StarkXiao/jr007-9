@@ -7,7 +7,7 @@ import { assertAttributesValid } from "../categories/schemaValidator";
 import { requireCategoryByCode } from "../categories/service";
 import { assertAllPublishable } from "../media/service";
 import { notify } from "../../services/notify";
-import { adjustCredit, CREDIT_DELTAS, incrementApprovedCount } from "../../services/moderation/credit";
+import { applyCreditEvent, incrementApprovedCount } from "../../services/moderation/credit";
 import { recordAudit } from "../../services/audit";
 import { logger } from "../../utils/logger";
 import type { AuthUser } from "../../types/auth";
@@ -125,7 +125,11 @@ export async function approveTask(
   ]);
 
   await incrementApprovedCount(task.spot.ownerId);
-  await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.SPOT_APPROVED);
+  // 申诉任务无论从哪条路径通过，都算改判：全额回抵当初驳回的扣分
+  await applyCreditEvent(task.spot.ownerId, isAppeal ? "appeal_approved" : "spot_approved", {
+    targetType: "spot",
+    targetId: task.spotId,
+  });
 
   await recordAudit({
     actorId: moderator.id,
@@ -227,7 +231,10 @@ export async function rejectTask(
     }),
   ]);
 
-  await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.SPOT_REJECTED);
+  await applyCreditEvent(task.spot.ownerId, "spot_rejected", {
+    targetType: "spot",
+    targetId: task.spotId,
+  });
 
   await recordAudit({
     actorId: moderator.id,
@@ -323,6 +330,13 @@ export async function decideAppeal(
       prisma.spot.update({ where: { id: task.spotId }, data: { status: "rejected_final" } }),
     ]);
 
+    // 申诉维持原判：原驳回扣分保留，再记一笔小额扣分，
+    // 让"申诉结果"与"违规记录"一样进入信用计算
+    await applyCreditEvent(task.spot.ownerId, "appeal_rejected", {
+      targetType: "spot",
+      targetId: task.spotId,
+    });
+
     await recordAudit({
       actorId: admin.id,
       action: AUDIT_ACTIONS.REVIEW_APPEAL_DECIDE,
@@ -376,7 +390,11 @@ export async function decideAppeal(
   ]);
 
   await incrementApprovedCount(task.spot.ownerId);
-  await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.APPEAL_UPHELD);
+  // 改判通过：全额回抵当初驳回扣掉的分数，误判不该让用户长期背着
+  await applyCreditEvent(task.spot.ownerId, "appeal_approved", {
+    targetType: "spot",
+    targetId: task.spotId,
+  });
 
   await recordAudit({
     actorId: admin.id,

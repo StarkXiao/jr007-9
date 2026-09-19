@@ -10,7 +10,11 @@ import { prisma, toJsonValue } from "../../db/prisma";
 import { AppError } from "../../utils/errors";
 import { parsePagination, pagedResult } from "../../utils/pagination";
 import { assertNoBlockedContent, assertNoPii, checkText } from "../../services/moderation/contentFilter";
-import { computeFreshness } from "../../services/moderation/credit";
+import {
+  applyCreditEvent,
+  computeFreshness,
+  publishPermissions,
+} from "../../services/moderation/credit";
 import { boundingBox, fuzzCoordinates, haversineMeters, isValidLatLng, reverseGeocode } from "../../services/geo";
 import { assertAttributesValid, validateAttributes } from "../categories/schemaValidator";
 import { requireCategoryByCode } from "../categories/service";
@@ -18,7 +22,6 @@ import { serializeSpot } from "../shared/serialize";
 import type { AuthUser } from "../../types/auth";
 import { isModerator } from "../../types/auth";
 import { notify } from "../../services/notify";
-import { adjustCredit, CREDIT_DELTAS } from "../../services/moderation/credit";
 import { logger } from "../../utils/logger";
 import type { CreateSpotInput, ListSpotsQuery, UpdateSpotInput } from "./schemas";
 
@@ -277,7 +280,20 @@ export async function createDraft(user: AuthUser, input: CreateSpotInput) {
   const category = await requireCategoryByCode(input.categoryCode);
 
   if (!isValidLatLng(input.lat, input.lng)) throw AppError.badRequest("坐标不合法");
-  if (input.mediaUuids.length > 6) throw AppError.badRequest("最多上传 6 张图片");
+
+  // 发布权限随信用分动态收窄：低分用户每日上限更低，限制档暂停新发布
+  const permissions = publishPermissions(user.creditScore, {
+    premoderateThreshold: env.PREMODERATE_CREDIT_THRESHOLD,
+    dailySpotLimit: env.DAILY_SPOT_LIMIT,
+  });
+  if (permissions.dailySpotLimit === 0) {
+    throw AppError.forbidden(
+      "你的信用分过低，暂时不能发布新条目。可以先修改已有记录或参与评论，信用恢复后再来",
+    );
+  }
+  if (input.mediaUuids.length > permissions.maxPhotosPerSpot) {
+    throw AppError.badRequest(`当前信用等级每条记录最多上传 ${permissions.maxPhotosPerSpot} 张图片`);
+  }
 
   assertNoBlockedContent(input.title, input.description);
 
@@ -285,10 +301,10 @@ export async function createDraft(user: AuthUser, input: CreateSpotInput) {
   const todayCount = await prisma.spot.count({
     where: { ownerId: user.id, createdAt: { gte: since }, status: { not: "draft" } },
   });
-  if (todayCount >= env.DAILY_SPOT_LIMIT) {
+  if (todayCount >= permissions.dailySpotLimit) {
     throw AppError.conflict(
       ERROR_CODES.RATE_LIMITED,
-      `每天最多提交 ${env.DAILY_SPOT_LIMIT} 条，今天已达上限，明天再来吧`,
+      `每天最多提交 ${permissions.dailySpotLimit} 条，今天已达上限，明天再来吧`,
     );
   }
 
@@ -353,6 +369,16 @@ export async function updateSpot(uuid: string, user: AuthUser, input: UpdateSpot
 
   if (input.lat !== undefined && input.lng !== undefined && !isValidLatLng(input.lat, input.lng)) {
     throw AppError.badRequest("坐标不合法");
+  }
+
+  if (input.mediaUuids !== undefined && spot.ownerId === user.id) {
+    // 图片数量上限跟着作者的信用等级走；审核员代为修改不受此限
+    const permissions = publishPermissions(user.creditScore, {
+      premoderateThreshold: env.PREMODERATE_CREDIT_THRESHOLD,
+    });
+    if (input.mediaUuids.length > permissions.maxPhotosPerSpot) {
+      throw AppError.badRequest(`当前信用等级每条记录最多上传 ${permissions.maxPhotosPerSpot} 张图片`);
+    }
   }
 
   // 已发布的条目被修改后需要重新审核，直接回到草稿状态
@@ -572,6 +598,18 @@ export async function submitForReview(uuid: string, user: AuthUser, options: { f
     );
   }
 
+  // 无视预检结论转人工复核是信用体系的一部分：限制档用户已失去这个入口，
+  // 只能按预检意见修改后再提交
+  if (options.fromAutoRejected) {
+    const permissions = publishPermissions(user.creditScore, {
+      premoderateThreshold: env.PREMODERATE_CREDIT_THRESHOLD,
+      dailySpotLimit: env.DAILY_SPOT_LIMIT,
+    });
+    if (!permissions.canOverrideAutoReject) {
+      throw AppError.forbidden("信用分不足，不能再申请人工复核，请根据预检意见修改后再提交");
+    }
+  }
+
   const category = await requireCategoryByCode(spot.category.code);
 
   // 提交时必须齐备必填属性——草稿宽容，提交严格
@@ -624,7 +662,10 @@ export async function submitForReview(uuid: string, user: AuthUser, options: { f
   // 无视自动预检、坚持转人工复核的，扣信用分。
   // 这是"误判可以申诉"与"别拿人工审核当免费通道"之间的平衡。
   if (options.fromAutoRejected) {
-    await adjustCredit(spot.ownerId, CREDIT_DELTAS.SPOT_AUTO_REJECTED_OVERRIDE);
+    await applyCreditEvent(spot.ownerId, "spot_auto_rejected_override", {
+      targetType: "spot",
+      targetId: spot.id,
+    });
   }
 
   if (!autoCheck.passed) {

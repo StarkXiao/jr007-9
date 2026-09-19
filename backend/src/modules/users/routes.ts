@@ -8,8 +8,71 @@ import { requireAuth } from "../../middleware/auth";
 import { prisma } from "../../db/prisma";
 import { AppError } from "../../utils/errors";
 import { logger } from "../../utils/logger";
+import { env } from "../../config/env";
+import {
+  computePassRate,
+  CREDIT_EVENT_LABELS,
+  publishPermissions,
+  type CreditEventKind,
+} from "../../services/moderation/credit";
 
 export const usersRouter = Router();
+
+/**
+ * 我的信用总览：当前分数、信用等级、由分数推导出的发布权限、
+ * 历史通过率与最近的信用事件。
+ * 分数怎么来的、现在能做什么，一页说清。
+ */
+usersRouter.get(
+  "/me/credit",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      select: { creditScore: true },
+    });
+    if (!user) throw AppError.notFound("用户不存在");
+
+    const permissions = publishPermissions(user.creditScore, {
+      premoderateThreshold: env.PREMODERATE_CREDIT_THRESHOLD,
+      dailySpotLimit: env.DAILY_SPOT_LIMIT,
+    });
+
+    const [passRate, events] = await Promise.all([
+      computePassRate(req.user!.id),
+      prisma.creditEvent.findMany({
+        where: { userId: req.user!.id },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
+    ]);
+
+    res.json(
+      ok(req, {
+        score: user.creditScore,
+        tier: permissions.tier,
+        tierLabel: permissions.tierLabel,
+        permissions: {
+          dailySpotLimit: permissions.dailySpotLimit,
+          maxPhotosPerSpot: permissions.maxPhotosPerSpot,
+          canUploadImages: permissions.canUploadImages,
+          commentTrust: permissions.commentTrust,
+          canOverrideAutoReject: permissions.canOverrideAutoReject,
+        },
+        passRate,
+        recentEvents: events.map((event) => ({
+          id: event.id.toString(),
+          kind: event.kind,
+          label: CREDIT_EVENT_LABELS[event.kind as CreditEventKind] ?? event.kind,
+          delta: event.delta,
+          scoreAfter: event.scoreAfter,
+          note: event.note,
+          createdAt: event.createdAt,
+        })),
+      }),
+    );
+  }),
+);
 
 usersRouter.get(
   "/me/settings",

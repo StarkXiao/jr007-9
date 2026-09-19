@@ -122,6 +122,7 @@ model User {
   blurRegions       BlurRegion[]
   categorySchemas   CategorySchema[]
   settings          UserSetting?
+  creditEvents      CreditEvent[]
 
   @@index([role, status], map: "idx_users_role_status")
   @@map("users")
@@ -470,4 +471,24 @@ model AuditLog {
   @@index([targetType, targetId, createdAt], map: "idx_audit_target")
   @@index([action, createdAt], map: "idx_audit_action")
   @@map("audit_logs")
+}
+
+// 信用事件流水：每一次信用分变动都落一条记录，
+// 违规记录、申诉改判、通过率修正都可据此追溯与重算。
+model CreditEvent {
+  id         BigInt   @id @default(autoincrement())
+  userId     BigInt   @map("user_id")
+  kind       String   @db.VarChar(32)
+  delta      Int      @db.SmallInt
+  scoreAfter Int      @map("score_after") @db.SmallInt
+  targetType String?  @map("target_type") @db.VarChar(24)
+  targetId   BigInt?  @map("target_id")
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt], map: "idx_credit_events_user")
+  @@index([kind, createdAt], map: "idx_credit_events_kind")
+  @@map("credit_events")
 }

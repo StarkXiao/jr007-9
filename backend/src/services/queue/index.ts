@@ -11,7 +11,7 @@ export interface ImageJobData {
 }
 
 export interface SweepJobData {
-  task: "sla-sweep" | "stale-sweep" | "purge-originals" | "cleanup";
+  task: "sla-sweep" | "stale-sweep" | "purge-originals" | "cleanup" | "credit-sweep";
 }
 
 const bullConnection: Redis = createBullConnection();

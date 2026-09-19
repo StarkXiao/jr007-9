@@ -115,6 +115,38 @@ export interface CurrentUser {
   };
 }
 
+export type CreditTier = "trusted" | "standard" | "limited" | "restricted";
+
+export interface CreditEventItem {
+  id: string;
+  kind: string;
+  label: string;
+  delta: number;
+  scoreAfter: number;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface CreditOverview {
+  score: number;
+  tier: CreditTier;
+  tierLabel: string;
+  permissions: {
+    dailySpotLimit: number;
+    maxPhotosPerSpot: number;
+    canUploadImages: boolean;
+    commentTrust: "full" | "conditional" | "premoderated";
+    canOverrideAutoReject: boolean;
+  };
+  passRate: {
+    approved: number;
+    rejected: number;
+    decided: number;
+    rate: number | null;
+  };
+  recentEvents: CreditEventItem[];
+}
+
 export interface UploadedAsset {
   uuid: string;
   duplicated: boolean;

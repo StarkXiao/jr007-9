@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "@/api/client";
-import type { Paged, Spot } from "@/api/types";
+import type { CreditOverview, Paged, Spot } from "@/api/types";
 import { useAuthStore } from "@/stores/auth";
 import { useCatalogStore } from "@/stores/catalog";
 
@@ -16,6 +16,7 @@ const spots = ref<Spot[]>([]);
 const favorites = ref<Spot[]>([]);
 const statusFilter = ref<string>("");
 const loading = ref(false);
+const credit = ref<CreditOverview | null>(null);
 
 const settings = ref({ defaultFuzzRadius: 50, notifyEmail: true, notifyInapp: true });
 const passwordForm = ref({ currentPassword: "", newPassword: "" });
@@ -64,6 +65,35 @@ async function loadFavorites() {
 async function loadSettings() {
   const result = await api.get<{ settings: typeof settings.value }>("/me/settings");
   settings.value = result.settings;
+}
+
+async function loadCredit() {
+  credit.value = await api.get<CreditOverview>("/me/credit");
+}
+
+const creditTierTagType = computed(() => {
+  switch (credit.value?.tier) {
+    case "trusted":
+      return "success";
+    case "standard":
+      return "primary";
+    case "limited":
+      return "warning";
+    default:
+      return "danger";
+  }
+});
+
+const COMMENT_TRUST_LABEL: Record<string, string> = {
+  full: "评论直接发布",
+  conditional: "积累 3 条过审评论后直接发布",
+  premoderated: "评论需审核后发布",
+};
+
+function passRateText(): string {
+  const stats = credit.value?.passRate;
+  if (!stats || stats.rate === null) return "暂无审核记录";
+  return `${Math.round(stats.rate * 100)}%（${stats.approved}/${stats.decided}）`;
 }
 
 async function withdraw(uuid: string) {
@@ -143,7 +173,7 @@ async function deleteAccount() {
 
 onMounted(async () => {
   await catalog.load().catch(() => undefined);
-  await Promise.all([loadContributions(), loadFavorites(), loadSettings()]);
+  await Promise.all([loadContributions(), loadFavorites(), loadSettings(), loadCredit()]);
 });
 </script>
 
@@ -220,6 +250,48 @@ onMounted(async () => {
         </el-card>
       </el-tab-pane>
 
+      <el-tab-pane label="信用与权限" name="credit">
+        <el-card v-if="credit" shadow="never">
+          <template #header>
+            <div style="display: flex; align-items: center; gap: 10px">
+              <span>信用分 {{ credit.score }}</span>
+              <el-tag :type="creditTierTagType" size="small">{{ credit.tierLabel }}</el-tag>
+              <span class="muted">历史通过率 {{ passRateText() }}</span>
+            </div>
+          </template>
+
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="每日可提交">
+              {{ credit.permissions.dailySpotLimit > 0 ? `${credit.permissions.dailySpotLimit} 条` : "暂停发布" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="每条记录图片">
+              {{ credit.permissions.maxPhotosPerSpot > 0 ? `最多 ${credit.permissions.maxPhotosPerSpot} 张` : "不能带图" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="评论">
+              {{ COMMENT_TRUST_LABEL[credit.permissions.commentTrust] }}
+            </el-descriptions-item>
+            <el-descriptions-item label="预检未通过时">
+              {{ credit.permissions.canOverrideAutoReject ? "可申请人工复核" : "需按预检意见修改" }}
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <template v-if="credit.recentEvents.length > 0">
+            <h4 style="margin: 16px 0 8px">最近信用记录</h4>
+            <div v-for="event in credit.recentEvents" :key="event.id" class="credit-event">
+              <span class="muted">{{ new Date(event.createdAt).toLocaleString("zh-CN") }}</span>
+              <span style="margin: 0 8px">{{ event.label }}</span>
+              <span :style="{ color: event.delta >= 0 ? '#67c23a' : '#f56c6c', fontWeight: 600 }">
+                {{ event.delta >= 0 ? `+${event.delta}` : event.delta }}
+              </span>
+              <span class="muted" style="margin-left: 8px">→ {{ event.scoreAfter }} 分</span>
+              <div v-if="event.note" class="muted" style="font-size: 12px">{{ event.note }}</div>
+            </div>
+          </template>
+          <el-empty v-else description="还没有信用记录" :image-size="60" />
+        </el-card>
+        <el-skeleton v-else :rows="6" animated />
+      </el-tab-pane>
+
       <el-tab-pane label="账号设置" name="settings">
         <el-card shadow="never">
           <el-form label-position="top">
@@ -262,3 +334,14 @@ onMounted(async () => {
     </el-tabs>
   </div>
 </template>
+
+<style scoped>
+.credit-event {
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
+  font-size: 13px;
+}
+.credit-event:last-child {
+  border-bottom: none;
+}
+</style>

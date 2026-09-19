@@ -8,7 +8,7 @@ import {
   type SweepJobData,
 } from "./services/queue";
 import { processAsset } from "./modules/media/service";
-import { cleanup, purgeOriginalImages, slaSweep, staleSweep } from "./jobs";
+import { cleanup, creditSweep, purgeOriginalImages, slaSweep, staleSweep } from "./jobs";
 import { initStorage } from "./services/storage";
 import { disconnectPrisma } from "./db/prisma";
 import { closeRedis, redis } from "./db/redis";
@@ -20,6 +20,7 @@ import { logger } from "./utils/logger";
 const SCHEDULES: Array<{ task: SweepJobData["task"]; pattern: string; label: string }> = [
   { task: "sla-sweep", pattern: "*/15 * * * *", label: "每 15 分钟：SLA 超时巡检" },
   { task: "stale-sweep", pattern: "20 3 * * *", label: "每天 03:20：新鲜度巡检" },
+  { task: "credit-sweep", pattern: "30 3 * * *", label: "每天 03:30：信用通过率巡检" },
   { task: "purge-originals", pattern: "40 3 * * *", label: "每天 03:40：清理超期原图" },
   { task: "cleanup", pattern: "0 4 * * *", label: "每天 04:00：清理过期令牌与通知" },
 ];
@@ -34,6 +35,8 @@ async function runSweep(task: SweepJobData["task"]) {
       return purgeOriginalImages();
     case "cleanup":
       return cleanup();
+    case "credit-sweep":
+      return creditSweep();
     default:
       throw new Error(`未知的定时任务：${task}`);
   }

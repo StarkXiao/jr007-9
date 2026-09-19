@@ -36,7 +36,7 @@ cd frontend && npm run dev    # http://localhost:5173
 ## 验证
 
 ```bash
-cd backend && npm run typecheck && npm test   # 31 个单元测试 + 20 个集成测试
+cd backend && npm run typecheck && npm test   # 46 个单元测试 + 29 个集成测试
 cd frontend && npm run typecheck && npm run build
 ```
 
@@ -46,7 +46,7 @@ cd frontend && npm run typecheck && npm run build
 
 ### 已经实际跑过的验证
 
-- 后端构建、类型检查、51 个测试（含完整闭环与账号状态集成测试）全部通过
+- 后端构建、类型检查、75 个测试（含完整闭环与账号状态集成测试）全部通过
 - 前端类型检查与生产构建通过，并已拆包
 - `docker compose up -d --build` 整套栈拉起后四个容器均为 healthy
 - 图片上传 → 元数据清除 → 人工打码 → 隐私确认 → 随条目发布，逐环节用真实图片验证过：公开变体中 EXIF 与 GPS 均已消失

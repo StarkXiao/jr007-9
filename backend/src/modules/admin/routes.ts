@@ -11,6 +11,7 @@ import { AUDIT_ACTIONS } from "../../config/constants";
 import { recordAudit } from "../../services/audit";
 import { notify } from "../../services/notify";
 import { moderationStats } from "../reviews/decisions";
+import { CREDIT_EVENT_LABELS, type CreditEventKind } from "../../services/moderation/credit";
 
 export const adminRouter = Router();
 
@@ -188,6 +189,51 @@ async function findUserByUuid(uuid: string) {
   if (!user) throw AppError.notFound("用户不存在");
   return user;
 }
+
+/** 某用户的信用事件流水：违规记录、申诉改判、通过率修正逐条可查 */
+adminRouter.get(
+  "/admin/users/:uuid/credit-events",
+  validate({
+    params: z.object({ uuid: z.string().uuid() }),
+    query: z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const user = await findUserByUuid(req.params.uuid);
+    const query = req.query as unknown as { page: number; pageSize: number };
+
+    const [items, total] = await Promise.all([
+      prisma.creditEvent.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: "desc" },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+      prisma.creditEvent.count({ where: { userId: user.id } }),
+    ]);
+
+    res.json(
+      ok(req, {
+        items: items.map((event) => ({
+          id: event.id.toString(),
+          kind: event.kind,
+          label: CREDIT_EVENT_LABELS[event.kind as CreditEventKind] ?? event.kind,
+          delta: event.delta,
+          scoreAfter: event.scoreAfter,
+          targetType: event.targetType,
+          targetId: event.targetId?.toString() ?? null,
+          note: event.note,
+          createdAt: event.createdAt,
+        })),
+        page: query.page,
+        pageSize: query.pageSize,
+        total,
+      }),
+    );
+  }),
+);
 
 adminRouter.patch(
   "/admin/users/:uuid/role",

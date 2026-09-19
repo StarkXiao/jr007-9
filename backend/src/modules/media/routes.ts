@@ -15,6 +15,7 @@ import { getStorage } from "../../services/storage";
 import { LocalStorage } from "../../services/storage/local";
 import { recordAudit } from "../../services/audit";
 import { AUDIT_ACTIONS } from "../../config/constants";
+import { publishPermissions } from "../../services/moderation/credit";
 import {
   confirmPrivacy,
   getVariant,
@@ -46,6 +47,15 @@ mediaRouter.post(
   rateLimit({ scope: "upload", limit: 60, windowSeconds: 600 }),
   upload.array("files", 6),
   asyncHandler(async (req, res) => {
+    // 信用限制档用户暂停传图——图片是隐私风险最高的内容，
+    // 信用不足时先把发布范围收窄到纯文字
+    const permissions = publishPermissions(req.user!.creditScore, {
+      premoderateThreshold: env.PREMODERATE_CREDIT_THRESHOLD,
+    });
+    if (!permissions.canUploadImages) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, "信用分过低，暂时不能上传图片");
+    }
+
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (files.length === 0) throw AppError.badRequest("请选择要上传的图片");
 

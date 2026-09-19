@@ -10,7 +10,7 @@ import { prisma } from "../../db/prisma";
 import { AppError } from "../../utils/errors";
 import { parsePagination, pagedResult } from "../../utils/pagination";
 import { checkText } from "../../services/moderation/contentFilter";
-import { adjustCredit, CREDIT_DELTAS } from "../../services/moderation/credit";
+import { applyCreditEvent, publishPermissions } from "../../services/moderation/credit";
 import { notify } from "../../services/notify";
 import { recordAudit } from "../../services/audit";
 import { serializeComment } from "../shared/serialize";
@@ -148,9 +148,13 @@ export async function createComment(
     throw AppError.conflict(ERROR_CODES.RATE_LIMITED, "同一个地点 24 小时内最多评论 3 次");
   }
 
-  // 分级审核：新用户先审后发，可信用户先发后审
+  // 分级审核：优质用户直接信任，正常用户需积累 3 条过审评论，受限用户一律先审
+  const permissions = publishPermissions(user.creditScore, {
+    premoderateThreshold: env.PREMODERATE_CREDIT_THRESHOLD,
+  });
   const trusted =
-    user.creditScore >= env.PREMODERATE_CREDIT_THRESHOLD && approvedComments >= 3;
+    permissions.commentTrust === "full" ||
+    (permissions.commentTrust === "conditional" && approvedComments >= 3);
   const status: CommentStatus = trusted ? "visible" : "pending";
 
   const comment = await prisma.comment.create({
@@ -272,6 +276,14 @@ export async function approveComment(commentId: bigint, moderator: AuthUser) {
   }
 
   await prisma.comment.update({ where: { id: commentId }, data: { status: "visible" } });
+
+  // 先审后发的评论通过审核，给信用分一个小幅回升——
+  // 这是低信用用户重建信任的主要通道
+  await applyCreditEvent(comment.userId, "comment_approved", {
+    targetType: "comment",
+    targetId: commentId,
+  });
+
   await recordAudit({
     actorId: moderator.id,
     action: AUDIT_ACTIONS.REVIEW_APPROVE,
@@ -295,7 +307,10 @@ export async function hideComment(commentId: bigint, moderator: AuthUser, reason
     data: { status: "hidden", hiddenReason: reason },
   });
 
-  await adjustCredit(comment.userId, CREDIT_DELTAS.COMMENT_HIDDEN);
+  await applyCreditEvent(comment.userId, "comment_hidden", {
+    targetType: "comment",
+    targetId: commentId,
+  });
 
   await recordAudit({
     actorId: moderator.id,
